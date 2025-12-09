@@ -4662,18 +4662,20 @@
     function cleanupPreviousCustomizer() {
         try {
             const panel = document.getElementById(CONFIG.PANEL_ID);
-            if (panel && panel.parentNode) {
-                const clone = panel.cloneNode(true);
-                panel.parentNode.replaceChild(clone, panel);
-                console.debug('cleanupPreviousCustomizer: replaced panel node to remove listeners');
+            // Avoid replacing the panel node (this caused extra removals/observer noise).
+            // Instead, just hide it and let the host/app manage DOM lifecycle.
+            if (panel) {
+                panel.style.setProperty('display', 'none', 'important');
+                panel.dataset.tcCleanupHidden = '1';
+                console.debug('cleanupPreviousCustomizer: hid panel instead of replacing it');
             }
 
-            // Also attempt to clear any temporary global handlers we may have set
-            if (window.__tc_domRemovalTraces && Array.isArray(window.__tc_domRemovalTraces)) {
-                // keep traces but avoid memory growth here
-                if (window.__tc_domRemovalTraces.length > 200) {
-                    window.__tc_domRemovalTraces = window.__tc_domRemovalTraces.slice(-100);
-                }
+            // Also hide/remove our overlay to avoid interfering with host initial renders
+            try { persistentBgService.removeOverlay(); } catch (e) {}
+
+            // Trim excessive traces to avoid memory growth (non-destructive)
+            if (window.__tc_domRemovalTraces && Array.isArray(window.__tc_domRemovalTraces) && window.__tc_domRemovalTraces.length > 500) {
+                window.__tc_domRemovalTraces = window.__tc_domRemovalTraces.slice(-200);
             }
         } catch (e) {
             console.warn('cleanupPreviousCustomizer failed', e);
