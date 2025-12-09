@@ -1010,35 +1010,132 @@
             },
 
             updateColor(color) {
+                // Try to use the theme color, but if it's very dark we'll use a light fallback
+                const fallback = '#f1f5f9';
+
+                function parseColorToRGB(input) {
+                    if (!input) return null;
+                    input = input.trim();
+                    // hex
+                    if (input[0] === '#') {
+                        let hex = input.slice(1);
+                        if (hex.length === 3) {
+                            hex = hex.split('').map(c => c + c).join('');
+                        }
+                        if (hex.length === 6) {
+                            const r = parseInt(hex.slice(0,2),16);
+                            const g = parseInt(hex.slice(2,4),16);
+                            const b = parseInt(hex.slice(4,6),16);
+                            return [r,g,b];
+                        }
+                        return null;
+                    }
+                    // rgb/rgba
+                    const rgbMatch = input.match(/rgba?\(([^)]+)\)/i);
+                    if (rgbMatch) {
+                        const parts = rgbMatch[1].split(',').map(p => p.trim());
+                        const r = parseInt(parts[0],10);
+                        const g = parseInt(parts[1],10);
+                        const b = parseInt(parts[2],10);
+                        return [r,g,b];
+                    }
+                    return null;
+                }
+
+                function luminance([r,g,b]){
+                    const a = [r,g,b].map(v => {
+                        v = v/255;
+                        return v <= 0.03928 ? v/12.92 : Math.pow((v+0.055)/1.055, 2.4);
+                    });
+                    return 0.2126*a[0] + 0.7152*a[1] + 0.0722*a[2];
+                }
+
+                let useColor = fallback;
+                const rgb = parseColorToRGB(color);
+                if (rgb) {
+                    try {
+                        const L = luminance(rgb);
+                        // If luminance is low (dark), prefer fallback to avoid dark flash
+                        if (L >= 0.35) {
+                            useColor = color;
+                        } else {
+                            useColor = fallback;
+                        }
+                    } catch (e) {
+                        useColor = color || fallback;
+                    }
+                } else {
+                    useColor = color || fallback;
+                }
+
                 const s = document.getElementById(this.STYLE_ID);
                 if (s) {
-                    s.textContent = `html, body { background-color: ${color || '#f1f5f9'} !important; }`;
-                    console.debug('persistentBgService: updated bg color to', color);
+                    s.textContent = `html, body { background-color: ${useColor} !important; }`;
+                    console.debug('persistentBgService: updated bg color to', useColor, '(requested:', color, ')');
                 } else {
-                    this.ensure(color || '#f1f5f9');
+                    this.ensure(useColor);
                 }
             },
 
             installDomObserver() {
                 if (this.observer) return;
 
-                this.observer = new MutationObserver((mutations) => {
-                    for (const m of mutations) {
-                        if (m.removedNodes && m.removedNodes.length > 0) {
-                            const removedCount = m.removedNodes.length;
-                            if (removedCount >= 1) {
-                                console.warn('persistentBgService: DOM nodes removed from body:', removedCount, 'url=', window.location.href);
-                            }
-                        }
+                const tryInstall = () => {
+                    if (!document.body) {
+                        setTimeout(tryInstall, 200);
+                        return;
                     }
-                });
 
-                try {
-                    this.observer.observe(document.body, { childList: true, subtree: false });
-                    console.debug('persistentBgService: DOM observer installed');
-                } catch (err) {
-                    console.warn('persistentBgService: failed to install observer', err);
-                }
+                    this.observer = new MutationObserver((mutations) => {
+                        try {
+                            for (const m of mutations) {
+                                if (m.removedNodes && m.removedNodes.length > 0) {
+                                    for (let i = 0; i < m.removedNodes.length; i++) {
+                                        const node = m.removedNodes[i];
+                                        let desc = null;
+                                        try {
+                                            if (node && node.nodeType === 1) {
+                                                const classes = (node.className || '').toString().trim().replace(/\s+/g, '.');
+                                                desc = `${node.nodeName.toLowerCase()}${node.id ? '#'+node.id : ''}${classes ? '.'+classes : ''}`;
+                                            } else {
+                                                desc = String(node);
+                                            }
+                                        } catch (e) {
+                                            desc = String(node);
+                                        }
+
+                                        const stack = (new Error('DOM_REMOVED')).stack;
+
+                                        try {
+                                            window.__tc_domRemovalTraces = window.__tc_domRemovalTraces || [];
+                                            window.__tc_domRemovalTraces.push({
+                                                time: Date.now(),
+                                                location: window.location.href,
+                                                removedDescriptor: desc,
+                                                removedOuterHTML: (node && node.outerHTML && node.outerHTML.length > 1000) ? node.outerHTML.slice(0,1000) + '...' : (node && node.outerHTML) || null,
+                                                stack
+                                            });
+                                            if (window.__tc_domRemovalTraces.length > 100) window.__tc_domRemovalTraces.shift();
+                                        } catch (e) { /* swallow storage errors */ }
+
+                                        console.warn('DOM_REMOVED', { removedDescriptor: desc, removedNode: node, stack });
+                                    }
+                                }
+                            }
+                        } catch (e) {
+                            console.error('persistentBgService: observer callback error', e);
+                        }
+                    });
+
+                    try {
+                        this.observer.observe(document.body, { childList: true, subtree: false });
+                        console.debug('persistentBgService: DOM observer installed (instrumentation active)');
+                    } catch (err) {
+                        console.warn('persistentBgService: failed to install observer', err);
+                    }
+                };
+
+                tryInstall();
             }
         };
 
