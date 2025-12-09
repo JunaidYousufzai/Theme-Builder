@@ -18,7 +18,7 @@
             AUTH_TOKEN: window.TOKEN,
             CACHE_DURATION: 5 * 60 * 1000, // 5 minutes cache
             DEBOUNCE_DELAY: 300, // ms for preview debouncing
-            HB_MS: 800 // heartbeat
+            HB_MS: 1000 // heartbeat (increased to reduce poll frequency)
         };
 
         // =========================
@@ -41,6 +41,8 @@
         panelWasManuallyOpened: false,
         // Timestamp of last rerun to prevent rapid double-invocations
         lastRerunTimestamp: 0,
+        // Timestamp of last heartbeat execution (debounce)
+        lastHeartbeat: 0,
             cache: {
                 themes: null,
                 themesTimestamp: 0,
@@ -445,18 +447,13 @@
         isAgencyAccount() {
             const pathname = window.location.pathname;
 
-            // ✅ Explicit exclusion for /accounts
-            if (pathname === '/accounts') {
-                return false; // never treat /accounts as agency
-            }
-
             // ✅ FIRST: Check if it's a sub-account URL (most important)
             // If it has /location/ID/ pattern, it's NOT agency
             if (/\/location\/[^\/]+\//.test(pathname)) {
                 return false; // This is a sub-account
             }
 
-            // ✅ Check for agency patterns
+            // ✅ Check for agency patterns (treat /accounts as agency)
             const agencyPatterns = [
                 /\/agency_/,
                 /\/agency-/,
@@ -467,7 +464,8 @@
                 /\/dashboard$/,
                 /^\/$/, // root path
                 /\/settings$/,
-                /\/billing$/
+                /\/billing$/,
+                /\/accounts(\/|$)/
             ];
             
             for (let pattern of agencyPatterns) {
@@ -2796,6 +2794,21 @@
         overflow-x: hidden !important;
         }
 
+        /* Prevent visual flash when inline styles toggle display */
+        .tc-panel[style*="display: none"] {
+            visibility: hidden !important;
+            opacity: 0 !important;
+            transition: none !important;
+            pointer-events: none !important;
+        }
+
+        .tc-panel[style*="display: grid"] {
+            visibility: visible !important;
+            opacity: 1 !important;
+            transition: none !important;
+            pointer-events: auto !important;
+        }
+
         .tc-panel .tc-user-info { 
         margin-bottom: 16px; 
         font-size: 16px; 
@@ -4558,11 +4571,36 @@
         }
     }
 
+    // Remove event listeners from previous customizer by replacing the panel with a clone
+    function cleanupPreviousCustomizer() {
+        try {
+            const panel = document.getElementById(CONFIG.PANEL_ID);
+            if (panel && panel.parentNode) {
+                const clone = panel.cloneNode(true);
+                panel.parentNode.replaceChild(clone, panel);
+                console.debug('cleanupPreviousCustomizer: replaced panel node to remove listeners');
+            }
+
+            // Also attempt to clear any temporary global handlers we may have set
+            if (window.__tc_domRemovalTraces && Array.isArray(window.__tc_domRemovalTraces)) {
+                // keep traces but avoid memory growth here
+                if (window.__tc_domRemovalTraces.length > 200) {
+                    window.__tc_domRemovalTraces = window.__tc_domRemovalTraces.slice(-100);
+                }
+            }
+        } catch (e) {
+            console.warn('cleanupPreviousCustomizer failed', e);
+        }
+    }
+
     // Update your rerunCustomizer function to call this:
     function rerunCustomizer() {
+        // Clean up previous customizer DOM listeners to avoid stray handlers
+        cleanupPreviousCustomizer();
+
         // Prevent very rapid consecutive reruns which can cause remove/reapply flicker
         const now = Date.now();
-        if (now - (state.lastRerunTimestamp || 0) < 250) {
+        if (now - (state.lastRerunTimestamp || 0) < 500) {
             console.debug('rerunCustomizer: skipping rapid consecutive run');
             return;
         }
@@ -4782,6 +4820,13 @@
 
 
     function heartbeat() {
+        // Throttle heartbeat to avoid rapid UI toggles
+        const nowHB = Date.now();
+        if (nowHB - (state.lastHeartbeat || 0) < 500) {
+            return;
+        }
+        state.lastHeartbeat = nowHB;
+
         // Don't run heartbeat until we have a location
         if (!state.currentLocation) {
             // console.log('Heartbeat skipped - no location');
@@ -4824,7 +4869,6 @@
         const excludedPages = [
             '/page-builder/',
             '/prospecting',
-            '/accounts',
             '/marketplace'
         ];
         
@@ -4901,22 +4945,33 @@
 
         (function () {
             let lastUrl = location.href;
+            let checkInProgress = false;
 
             setInterval(() => {
-                const currentUrl = location.href;
-                if (currentUrl !== lastUrl) {
-                    lastUrl = currentUrl;
+                if (checkInProgress) return;
+                checkInProgress = true;
 
-                    // reset retries
-                    state.mountRetryCount = 0;
+                try {
+                    const currentUrl = location.href;
+                    if (currentUrl !== lastUrl) {
+                        lastUrl = currentUrl;
 
-                    // close panel (optional)
-                    // uiService.closePanel?.();
+                        // reset retries after brief delay to avoid overlapping navigation churn
+                        setTimeout(() => {
+                            state.mountRetryCount = 0;
+                            checkInProgress = false;
+                        }, 300);
 
-                    // try mounting again
-                    uiService.mountBeforeHeaderIcons();
+                        // Don't force immediate mount here; let heartbeat handle mounting.
+                        // This avoids double work and potential flashes.
+                    } else {
+                        checkInProgress = false;
+                    }
+                } catch (e) {
+                    console.warn('URL poll error', e);
+                    checkInProgress = false;
                 }
-            }, 800);
+            }, 1000);
         })();
 
 
