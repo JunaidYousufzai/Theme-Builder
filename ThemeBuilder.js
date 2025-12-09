@@ -4249,8 +4249,11 @@ async function initializeThemeCustomizer() {
         const currentLocation = urlLocationService.getCurrentLocation();
         
         if (!currentLocation || !currentLocation.locationId) {
-            console.log('No location detected, skipping theme customizer');
-            state.isInitialized = true;
+            console.log('No location detected, skipping theme customizer for now');
+            // Do NOT mark as initialized when there's no location context.
+            // This allows the initializer to run again later when a valid
+            // location becomes available (prevents permanent skipping).
+            state.currentLocation = currentLocation || null;
             return;
         }
         
@@ -4388,58 +4391,74 @@ function ensurePanelClosedOnNavigation() {
 function rerunCustomizer() {
     const newLoc = urlLocationService.getCurrentLocation();
     const oldLocId = state.currentLocation ? state.currentLocation.locationId : null;
-    
+
+    // Use a persisted last-valid location if the new location has no id
+    let effectiveNewLoc = newLoc;
+    if (!newLoc || !newLoc.locationId) {
+        const persisted = locationPersistence.getPersistedLocation();
+        if (persisted && persisted.locationId) {
+            effectiveNewLoc = persisted;
+        }
+    }
+
     // ✅ Handle prospecting page
     if (newLoc && newLoc.isProspectingPage) {
         const btn = document.getElementById(CONFIG.BTN_ID);
         if (btn) btn.remove();
-        
+
         // ✅ CRITICAL: Close panel and ensure it stays closed
         uiService.closePanel();
         return;
     }
-    
+
     // ✅ Handle transition FROM prospecting TO normal page
-    if (state.currentLocation && state.currentLocation.isProspectingPage && 
+    if (state.currentLocation && state.currentLocation.isProspectingPage &&
         newLoc && !newLoc.isProspectingPage) {
         console.log('Transition from prospecting to normal page');
         state.currentLocation = newLoc;
         state.isInitialized = false;
-        
+
         // ✅ CRITICAL: Reset panel state
         state.panelWasManuallyOpened = false;
         uiService.closePanel();
-        
+
         initializeThemeCustomizer();
         return;
     }
 
+    // If effectiveNewLoc lacks an id, do not clear styling — just ensure UI stays mounted
+    if (!effectiveNewLoc || !effectiveNewLoc.locationId) {
+        ensurePanelClosedOnNavigation();
+        uiService.mountBeforeHeaderIcons();
+        return;
+    }
+
     // Only reinitialize if location actually changed
-    if (newLoc && newLoc.locationId === oldLocId) {
+    if (effectiveNewLoc && effectiveNewLoc.locationId === oldLocId) {
         // ✅ Ensure panel stays closed unless user opened it
         ensurePanelClosedOnNavigation();
-        
+
         uiService.mountBeforeHeaderIcons();
         return;
     }
 
     // ⚠️ LOCATION CHANGED - Clear all cached data for old location
-    console.log('📍 Location changed from', oldLocId, 'to', newLoc?.locationId);
+    console.log('📍 Location changed from', oldLocId, 'to', effectiveNewLoc?.locationId);
     console.log('🧹 Clearing cache and state for location switch');
-    
+
     // Clear cache immediately
     cacheService.clearCache();
-    
+
     // Reset state variables
     state.currentTheme = null;
     state.themes = [];
     state.isInitialized = false;
     state.mountRetryCount = 0;
-    
+
     // ✅ Reset panel state on location change
     state.panelWasManuallyOpened = false;
     uiService.closePanel();
-    
+
     // Remove all applied CSS/styles from previous location
     themeCSSService.removeThemeCSS();
     themeCSSService.removePreviewCSS();
