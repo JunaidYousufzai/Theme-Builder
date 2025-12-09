@@ -997,6 +997,9 @@
             STYLE_ID: 'tc-persistent-bg',
             observer: null,
 
+            OVERLAY_ID: 'tc-persistent-overlay',
+            headObserver: null,
+
             ensure(defaultColor = '#f1f5f9') {
                 if (!document.getElementById(this.STYLE_ID)) {
                     const s = document.createElement('style');
@@ -1005,6 +1008,14 @@
                     document.head.appendChild(s);
                     console.debug('persistentBgService: injected persistent background', defaultColor);
                 }
+                // Ensure overlay exists as additional protection
+                try {
+                    this.ensureOverlay(defaultColor);
+                } catch (e) { /* ignore overlay failures */ }
+
+                // Ensure observers are active so we can re-add if host mutates head/body
+                try { this.installDomObserver(); } catch (e) {}
+                try { this.installHeadObserver(); } catch (e) {}
             },
 
             updateColor(color) {
@@ -1070,9 +1081,61 @@
                 if (s) {
                     s.textContent = `html, body { background-color: ${useColor} !important; }`;
                     console.debug('persistentBgService: updated bg color to', useColor, '(requested:', color, ')');
+                    try { this.updateOverlayColor(useColor); } catch (e) { /* ignore */ }
                 } else {
                     this.ensure(useColor);
                 }
+            },
+
+            // Fullscreen overlay element as a stronger visual fallback
+            ensureOverlay(color = '#f1f5f9') {
+                try {
+                    let o = document.getElementById(this.OVERLAY_ID);
+                    if (!o) {
+                        o = document.createElement('div');
+                        o.id = this.OVERLAY_ID;
+                        o.setAttribute('aria-hidden', 'true');
+                        o.style.position = 'fixed';
+                        o.style.top = '0';
+                        o.style.left = '0';
+                        o.style.width = '100%';
+                        o.style.height = '100%';
+                        o.style.zIndex = '999999'; // below panel (panel uses 1000000)
+                        o.style.pointerEvents = 'none';
+                        o.style.transition = 'none';
+                        o.style.opacity = '1';
+                        o.style.visibility = 'visible';
+                        o.style.background = color;
+                        // Attach to documentElement to reduce chance of being removed by body-only wipes
+                        try { document.documentElement.appendChild(o); }
+                        catch (e) { document.body.appendChild(o); }
+                        console.debug('persistentBgService: overlay injected');
+                    } else {
+                        o.style.background = color;
+                        o.style.visibility = 'visible';
+                        o.style.opacity = '1';
+                    }
+                } catch (e) {
+                    console.warn('persistentBgService: ensureOverlay failed', e);
+                }
+            },
+
+            updateOverlayColor(color) {
+                try {
+                    const o = document.getElementById(this.OVERLAY_ID);
+                    if (o) {
+                        o.style.background = color;
+                    } else {
+                        this.ensureOverlay(color);
+                    }
+                } catch (e) { /* ignore overlay update errors */ }
+            },
+
+            removeOverlay() {
+                try {
+                    const o = document.getElementById(this.OVERLAY_ID);
+                    if (o && o.parentNode) o.parentNode.removeChild(o);
+                } catch (e) { /* ignore */ }
             },
 
             installDomObserver() {
@@ -1134,6 +1197,30 @@
                 };
 
                 tryInstall();
+            }
+,
+            // Observe head to re-insert critical elements if removed by host code
+            installHeadObserver() {
+                if (this.headObserver) return;
+                try {
+                    this.headObserver = new MutationObserver((mutations) => {
+                        for (const m of mutations) {
+                            if (m.removedNodes && m.removedNodes.length > 0) {
+                                for (const n of m.removedNodes) {
+                                    // If our persistent style or overlay was removed, re-add
+                                    if (n && n.id === this.STYLE_ID) {
+                                        console.warn('persistentBgService: persistent style was removed, re-adding');
+                                        this.ensure();
+                                    }
+                                }
+                            }
+                        }
+                    });
+                    this.headObserver.observe(document.head, { childList: true, subtree: false });
+                    console.debug('persistentBgService: head observer installed');
+                } catch (e) {
+                    console.warn('persistentBgService: failed to install head observer', e);
+                }
             }
         };
 
