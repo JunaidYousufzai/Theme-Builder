@@ -4840,29 +4840,8 @@
         // Call once on page load
         // === Bootstrap ===
         initializeThemeCustomizer();
-
-        // Re-run on browser back/forward
-        window.addEventListener('popstate', () => {
-            state.isInitialized = false;
-            initializeThemeCustomizer();
-        });
-
-        // Re-run on SPA navigation (pushState / replaceState)
-        (function (history) {
-            const rerun = () => {
-                state.isInitialized = false;
-                initializeThemeCustomizer();
-            };
-
-            const wrap = (fn) => function (...args) {
-                const result = fn.apply(this, args);
-                rerun();
-                return result;
-            };
-
-            history.pushState = wrap(history.pushState);
-            history.replaceState = wrap(history.replaceState);
-        })(window.history);
+        // Note: navigation handlers already registered earlier (single source of rerun)
+        // avoid duplicating popstate / history wrappers which caused double-initialization.
 
 
         // =========================
